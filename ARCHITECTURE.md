@@ -4,64 +4,64 @@
 
 ```mermaid
 graph TB
-    subgraph "Model Registry & Supply Chain"
-        HF[HuggingFace Hub<br/>- Qwen2.5-0.5B<br/>- OpenELM-450M<br/>- Gemma-2-2b-it<br/>- DialoGPT-medium]
-        MF[Model Fetch<br/>Python + transformers<br/>snapshot_download()]
+    subgraph "Model Registry"
+        HF[HuggingFace Hub]
+        MF[Model Fetch]
         HF --> MF
     end
 
-    subgraph "Security & Signing Layer"
-        CS[Cosign Signing<br/>- RSA 4096-bit keys<br/>- ECDSA P-256<br/>- Sigstore transparency log]
-        SS[Sigstore Registry<br/>- Rekor transparency log<br/>- Fulcio CA<br/>- OIDC verification]
+    subgraph "Security Layer"
+        CS[Cosign Signing]
+        SS[Sigstore Registry]
         MF --> CS
         CS --> SS
     end
 
     subgraph "Vulnerability Assessment"
-        GS[NVIDIA Garak Scanner<br/>- 50+ security probes<br/>- DAN, Injection, XSS<br/>- Bias & Toxicity detection]
-        SR[Scan Results<br/>- JSONL reports<br/>- Vulnerability scoring<br/>- Risk classification]
+        GS[NVIDIA Garak Scanner]
+        SR[Scan Results]
         CS --> GS
         GS --> SR
     end
 
-    subgraph "Guardrails Layer"
-        IG[Input Guardrails<br/>- PII detection<br/>- Toxicity filtering<br/>- Bias assessment]
-        OG[Output Guardrails<br/>- Content sanitization<br/>- Safety validation<br/>- Response filtering]
-        NG[NeMo Guardrails<br/>- Conversational flows<br/>- Topic restrictions<br/>- Context awareness]
-        GA[Guardrails AI<br/>- ML-based validation<br/>- Custom validators<br/>- Real-time scoring]
+    subgraph "Guardrails"
+        IG[Input Guardrails]
+        OG[Output Guardrails]
+        NG[NeMo Guardrails]
+        GA[Guardrails AI]
         
         IG --> NG
         NG --> GA
         GA --> OG
     end
 
-    subgraph "API Gateway & Service Mesh"
-        EG[Envoy Gateway<br/>- Rate limiting (100/min)<br/>- Circuit breaker<br/>- Load balancing]
-        IS[Istio Service Mesh<br/>- mTLS encryption<br/>- Traffic management<br/>- Security policies]
-        RL[Rate Limiter<br/>- Redis backend<br/>- Token bucket algorithm<br/>- Per-user quotas]
+    subgraph "API Gateway"
+        EG[Envoy Gateway]
+        IS[Istio Service Mesh]
+        RL[Rate Limiter]
         
         EG --> IS
         IS --> RL
     end
 
     subgraph "Model Serving"
-        MS[Model Service<br/>- HuggingFace TGI<br/>- GPU acceleration<br/>- Batch processing]
-        MC[Model Cache<br/>- 20GB PVC<br/>- Model artifacts<br/>- Tokenizer cache]
+        MS[Model Service]
+        MC[Model Cache]
         MS --> MC
     end
 
-    subgraph "Monitoring & Observability"
-        PR[Prometheus<br/>- Metrics collection<br/>- Alert rules<br/>- Time series DB]
-        GR[Grafana<br/>- Dashboards<br/>- Visualization<br/>- Alerting UI]
-        JA[Jaeger<br/>- Distributed tracing<br/>- Request flow<br/>- Performance analysis]
+    subgraph "Monitoring"
+        PR[Prometheus]
+        GR[Grafana]
+        JA[Jaeger]
         
         PR --> GR
         PR --> JA
     end
 
     subgraph "Orchestration"
-        KF[Kubeflow Pipelines<br/>- Argo Workflows<br/>- DAG execution<br/>- Pipeline versioning]
-        K8[Kubernetes<br/>- Container orchestration<br/>- Resource management<br/>- Auto-scaling]
+        KF[Kubeflow Pipelines]
+        K8[Kubernetes]
         
         KF --> K8
     end
