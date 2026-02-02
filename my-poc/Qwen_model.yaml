@@ -1,0 +1,250 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hf-secret
+  namespace: models
+type: Opaque
+stringData:
+  HF_TOKEN: "YOUR_HF_TOKEN_HERE"
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ClusterStorageContainer
+metadata:
+  name: hf-hub2
+spec:
+  container:
+    name: storage-initializer
+    image: 'kserve/storage-initializer:latest'
+    env:
+      - name: HF_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: hf-secret
+            key: HF_TOKEN
+            optional: false
+    resources:
+      requests:
+        memory: 2Gi
+        cpu: '1'
+      limits:
+        memory: 4Gi
+        cpu: '1'
+  supportedUriFormats:
+    - prefix: 'hf://'
+
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LocalModelNodeGroup
+metadata:
+  name: workers
+spec:
+  storageLimit: 50G
+  persistentVolumeClaimSpec:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 50G
+    storageClassName: standard
+    volumeMode: Filesystem
+    volumeName: models
+  persistentVolumeSpec:
+    accessModes:
+      - ReadWriteOnce
+    volumeMode: Filesystem
+    capacity:
+      storage: 50G
+    local:
+      path: /models
+    storageClassName: standard
+
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: LocalModelCache
+metadata:
+  name: qwen2.5-0.5b-instruct-cache
+spec:
+  sourceModelUri: 'hf://Qwen/Qwen2.5-0.5B-Instruct'
+  modelSize: 10Gi
+  nodeGroups:
+    - workers
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen2
+  namespace: models
+  annotations:
+    serving.kserve.io/deploymentMode: "RawDeployment"
+    serving.kserve.io/autoscalerClass: "keda"
+    serving.kserve.io/enable-prometheus-scraping: "true"
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "9090"
+    prometheus.io/scheme: "http"
+spec:
+  predictor:
+    model:
+      modelFormat:
+        name: huggingface
+      args:
+        - --model_id=Qwen/Qwen2.5-0.5B-Instruct
+        - --task=generate
+      env:
+        - name: HUGGINGFACE_HUB_CACHE
+          value: /tmp/huggingface
+        - name: TRANSFORMERS_CACHE
+          value: /tmp/huggingface
+        - name: VLLM_CPU_KVCACHE_SPACE
+          value: "2"
+      storageUri: hf://Qwen/Qwen2.5-0.5B-Instruct
+      resources:
+        limits:
+          cpu: "4"
+          memory: 20Gi
+        requests:
+          cpu: "2"
+          memory: 4Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen2-direct
+  namespace: models
+  labels:
+    app: isvc.qwen2-predictor
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"   # numeric port or port name (must match one of the ports below)
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: isvc.qwen2-predictor          # matches pod label
+  ports:
+    - name: http-vllm
+      protocol: TCP
+      port: 8080                       # service port
+      targetPort: 8080                 # container port in the pod
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen2.5-0.5b-instruct-cache-workers
+  namespace: models
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: standard
+
+# ---
+# ########### AUTO SCALE WITH KEDA AND Prometheus METRICS ###########
+# apiVersion: serving.kserve.io/v1beta1
+# kind: InferenceService
+# metadata:
+#   name: huggingface-qwen
+#   namespace: models
+#   annotations:
+#     serving.kserve.io/deploymentMode: "Standard"
+#     serving.kserve.io/autoscalerClass: "keda"
+#     serving.kserve.io/enable-prometheus-scraping: "true"
+#     prometheus.io/scrape: "true"
+#     prometheus.io/path: "/metrics"
+#     prometheus.io/port: "8080"
+#     prometheus.io/scheme: "http"
+# spec:
+#   predictor:
+#     model:
+#       modelFormat:
+#         name: huggingface
+#       args:
+#         - --model_id=Qwen/Qwen2.5-0.5B-Instruct
+#         - --task=generate
+#       env:
+#         - name: HUGGINGFACE_HUB_CACHE
+#           value: /tmp/huggingface
+#         - name: TRANSFORMERS_CACHE
+#           value: /tmp/huggingface
+#         - name: VLLM_CPU_KVCACHE_SPACE
+#           value: "2"
+#       storageUri: "hf://Qwen/Qwen2.5-0.5B-Instruct"
+#       resources:
+#         limits:
+#           cpu: "4"
+#           memory: 16Gi
+#         requests:
+#           cpu: "2"
+#           memory: 8Gi
+#     nodeSelector:
+#       models: "true"
+#     tolerations:
+#       - key: models
+#         operator: Exists
+#         effect: NoSchedule
+#     minReplicas: 1
+#     maxReplicas: 5
+#     autoScaling:
+#       metrics:
+#         - type: External
+#           external:
+#             metric:
+#               backend: "prometheus"
+#               serverAddress: "http://prometheus.monitoring.svc.cluster.local:9090"
+#               query: vllm:num_requests_running   ## if you get multiple pods this ned to avg out to spred the load
+#             target:
+#               type: Value
+#               value: "2"
+
+
+        
+# ---
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: qwen2-direct
+#   namespace: models
+# spec:
+#   selector:
+#     app: qwen2-predictor-00001          # matches pod label
+#   ports:
+#     - protocol: TCP
+#       port: 8080                         # service port
+#       targetPort: 8080                   # container port in the pod
+#   type: ClusterIP
+
+# -------------------------------
+# commands to run
+
+# kubectl port-forward pod/qwen2-predictor-696f9cc5d7-dfp77 8081:8080 -n models
+
+#  curl -i -X POST "http://localhost:8081/openai/v1/chat/completions" \
+#   -H "Content-Type: application/json" \
+#   -d '{
+#     "model": "qwen2",
+#     "messages": [{"role":"user","content":"Hello"}]
+#   }'
+
+#   http://qwen2-direct.models.svc.cluster.local:8080
+
+#  curl -i -X POST "http://qwen2-direct.models.svc.cluster.local:8080/openai/v1/chat/completions" -H "Content-Type: application/json"  -d '{ "model": "qwen2",  "messages": [{"role":"user","content":"Hello"}] }'
+
+
+# parallel requests testing
+# seq 10 | xargs -n1 -P5 -I{} sh -c 'echo "=== Request {} ==="; curl -s -X POST "http://localhost:8081/openai/v1/chat/completions" -H "Content-Type: application/json" -d '\''{"model":"qwen2","messages":[{"role":"user","content":"Hello"}]}'\''; echo'
+
+
+
+# ----------------------------
+# Thing need to be i,provised
+# check the consistant autoScaling - scaling is happening in the terminating state check with the  q chat onece
+# create a service for frontend application which is consiming this model
+
+
+# https://github.com/NVIDIA/dcgm-exporter
+# schedule the node to the GPU  driven and aapply the gpu daemonset
+# import the GPU metrics to prometheus and create grafana dashboard rules for GPU utilization

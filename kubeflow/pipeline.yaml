@@ -1,0 +1,147 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubeflow
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-pipeline-config
+  namespace: kubeflow
+data:
+  pipeline.yaml: |
+    apiVersion: argoproj.io/v1alpha1
+    kind: Workflow
+    metadata:
+      generateName: llm-security-pipeline-
+      namespace: kubeflow
+    spec:
+      entrypoint: llm-security-pipeline
+      templates:
+      - name: llm-security-pipeline
+        dag:
+          tasks:
+          - name: model-fetch
+            template: model-fetch-task
+          - name: model-signing
+            template: model-signing-task
+            dependencies: [model-fetch]
+          - name: security-scan
+            template: garak-scan-task
+            dependencies: [model-signing]
+          - name: deploy-guardrails
+            template: guardrails-deploy-task
+            dependencies: [security-scan]
+          - name: setup-gateway
+            template: gateway-setup-task
+            dependencies: [deploy-guardrails]
+      
+      - name: model-fetch-task
+        container:
+          image: python:3.9
+          command: [python]
+          args: ["/scripts/model_fetch.py"]
+          volumeMounts:
+          - name: scripts
+            mountPath: /scripts
+          - name: models
+            mountPath: /models
+      
+      - name: model-signing-task
+        container:
+          image: gcr.io/projectsigstore/cosign:latest
+          command: [python]
+          args: ["/scripts/model_signing.py"]
+          volumeMounts:
+          - name: scripts
+            mountPath: /scripts
+          - name: models
+            mountPath: /models
+          - name: security
+            mountPath: /security
+      
+      - name: garak-scan-task
+        container:
+          image: python:3.9
+          command: [python]
+          args: ["/scripts/garak_scan.py"]
+          volumeMounts:
+          - name: scripts
+            mountPath: /scripts
+          - name: models
+            mountPath: /models
+          - name: security
+            mountPath: /security
+      
+      - name: guardrails-deploy-task
+        container:
+          image: python:3.9
+          command: [python]
+          args: ["/scripts/setup_guardrails.py"]
+          volumeMounts:
+          - name: scripts
+            mountPath: /scripts
+          - name: guardrails
+            mountPath: /guardrails
+      
+      - name: gateway-setup-task
+        container:
+          image: bitnami/kubectl:latest
+          command: [kubectl]
+          args: ["apply", "-f", "/gateway/"]
+          volumeMounts:
+          - name: gateway
+            mountPath: /gateway
+      
+      volumes:
+      - name: scripts
+        configMap:
+          name: pipeline-scripts
+      - name: models
+        persistentVolumeClaim:
+          claimName: models-pvc
+      - name: security
+        persistentVolumeClaim:
+          claimName: security-pvc
+      - name: guardrails
+        persistentVolumeClaim:
+          claimName: guardrails-pvc
+      - name: gateway
+        configMap:
+          name: gateway-configs
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models-pvc
+  namespace: kubeflow
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: security-pvc
+  namespace: kubeflow
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: guardrails-pvc
+  namespace: kubeflow
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

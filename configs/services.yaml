@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guardrails-service
+  namespace: default
+  labels:
+    app: guardrails-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: guardrails-service
+  template:
+    metadata:
+      labels:
+        app: guardrails-service
+    spec:
+      containers:
+      - name: guardrails
+        image: python:3.9-slim
+        ports:
+        - containerPort: 8000
+        env:
+        - name: PYTHONPATH
+          value: "/app"
+        command: ["python", "/app/guardrails/service.py"]
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: app-code
+        configMap:
+          name: guardrails-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: guardrails-service
+  namespace: default
+spec:
+  selector:
+    app: guardrails-service
+  ports:
+  - protocol: TCP
+    port: 8000
+    targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-service
+  namespace: default
+  labels:
+    app: model-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: model-service
+  template:
+    metadata:
+      labels:
+        app: model-service
+    spec:
+      containers:
+      - name: model-server
+        image: huggingface/text-generation-inference:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: MODEL_ID
+          value: "microsoft/DialoGPT-medium"
+        - name: PORT
+          value: "8080"
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        volumeMounts:
+        - name: model-cache
+          mountPath: /data
+      volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-service
+  namespace: default
+spec:
+  selector:
+    app: model-service
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-cache-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
