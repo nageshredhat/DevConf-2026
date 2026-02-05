@@ -1,0 +1,212 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy-ai-gateway-basic
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: envoy-ai-gateway-basic
+  namespace: default
+spec:
+  gatewayClassName: envoy-ai-gateway-basic
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+---
+# Backend for local LLM model
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: qwen-llm-backend
+  namespace: default
+spec:
+  endpoints:
+  - fqdn:
+      hostname: qwen2.5-kubeflow.svc.cluster.local
+      port: 8080
+---
+# HTTPRoute with token-based rate limiting
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: envoy-ai-gateway-basic
+  namespace: default
+spec:
+  parentRefs:
+  - name: envoy-ai-gateway-basic
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v1/chat/completions
+    filters:
+    - type: ExtensionRef
+      extensionRef:
+        group: gateway.envoyproxy.io
+        kind: RateLimitFilter
+        name: token-rate-limit
+    backendRefs:
+    - group: gateway.envoyproxy.io
+      kind: Backend
+      name: qwen-llm-backend
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v1/completions
+    filters:
+    - type: ExtensionRef
+      extensionRef:
+        group: gateway.envoyproxy.io
+        kind: RateLimitFilter
+        name: token-rate-limit
+    backendRefs:
+    - group: gateway.envoyproxy.io
+      kind: Backend
+      name: qwen-llm-backend
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v1/models
+    backendRefs:
+    - group: gateway.envoyproxy.io
+      kind: Backend
+      name: qwen-llm-backend
+---
+# Token-based Rate Limiting Filter
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: RateLimitFilter
+metadata:
+  name: token-rate-limit
+  namespace: default
+spec:
+  type: Global
+  global:
+    rules:
+    - clientSelectors:
+      - headers:
+        - name: authorization
+          value: "Bearer *"
+      descriptors:
+      - entries:
+        - key: token_hash
+          value: "{authorization|hash}"
+    - clientSelectors:
+      - headers:
+        - name: x-api-key
+          value: "*"
+      descriptors:
+      - entries:
+        - key: api_key
+          value: "{x-api-key}"
+---
+# Rate Limit Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ratelimit-config
+  namespace: envoy-gateway-system
+data:
+  config.yaml: |
+    domain: default
+    descriptors:
+      - key: token_hash
+        rate_limit:
+          unit: minute
+          requests_per_unit: 60
+      - key: api_key
+        rate_limit:
+          unit: minute
+          requests_per_unit: 100
+---
+# EnvoyProxy for custom configuration
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: envoy-ai-gateway-basic
+  namespace: default
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: LoadBalancer
+  bootstrap:
+    type: Replace
+    value: |
+      admin:
+        address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 19000
+      static_resources:
+        listeners:
+        - name: listener_0
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: 8080
+          filter_chains:
+          - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                access_log:
+                - name: envoy.access_loggers.stdout
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                http_filters:
+                - name: envoy.filters.http.ratelimit
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit
+                    domain: default
+                    rate_limit_service:
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: rate_limit_cluster
+                      transport_api_version: V3
+                - name: envoy.filters.http.router
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                  - name: local_service
+                    domains: ["*"]
+                    routes:
+                    - match:
+                        prefix: "/"
+                      route:
+                        cluster: qwen_cluster
+        clusters:
+        - name: qwen_cluster
+          connect_timeout: 30s
+          type: LOGICAL_DNS
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: qwen_cluster
+            endpoints:
+            - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: qwen2.5-kubeflow.svc.cluster.local
+                      port_value: 8080
+        - name: rate_limit_cluster
+          connect_timeout: 1s
+          type: LOGICAL_DNS
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: rate_limit_cluster
+            endpoints:
+            - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: envoy-ratelimit.envoy-gateway-system.svc.cluster.local
+                      port_value: 8081

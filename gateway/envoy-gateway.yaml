@@ -1,33 +1,17 @@
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: EnvoyGateway
-metadata:
-  name: llm-gateway-config
-  namespace: envoy-gateway-system
-spec:
-  gateway:
-    controllerName: gateway.envoyproxy.io/gatewayclass-controller
-  provider:
-    type: Kubernetes
-  rateLimit:
-    backend:
-      type: Redis
-      redis:
-        url: redis://redis.envoy-gateway-system.svc.cluster.local:6379
----
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
-  name: llm-gateway-class
+  name: envoy-ai-gateway-basic
 spec:
   controllerName: gateway.envoyproxy.io/gatewayclass-controller
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: llm-api-gateway
+  name: envoy-ai-gateway-basic
   namespace: default
 spec:
-  gatewayClassName: llm-gateway-class
+  gatewayClassName: envoy-ai-gateway-basic
   listeners:
   - name: http
     port: 80
@@ -35,27 +19,15 @@ spec:
     allowedRoutes:
       namespaces:
         from: All
-  - name: https
-    port: 443
-    protocol: HTTPS
-    tls:
-      mode: Terminate
-      certificateRefs:
-      - name: llm-tls-cert
-    allowedRoutes:
-      namespaces:
-        from: All
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: llm-routes
+  name: envoy-ai-gateway-basic
   namespace: default
 spec:
   parentRefs:
-  - name: llm-api-gateway
-  hostnames:
-  - "llm-api.local"
+  - name: envoy-ai-gateway-basic
   rules:
   - matches:
     - path:
@@ -68,12 +40,6 @@ spec:
     - path:
         type: PathPrefix
         value: /v1/chat
-    filters:
-    - type: ExtensionRef
-      extensionRef:
-        group: gateway.envoyproxy.io
-        kind: RateLimitFilter
-        name: chat-rate-limit
     backendRefs:
     - name: guardrails-service
       port: 8000
@@ -81,58 +47,18 @@ spec:
     - path:
         type: PathPrefix
         value: /v1/completions
-    filters:
-    - type: ExtensionRef
-      extensionRef:
-        group: gateway.envoyproxy.io
-        kind: RateLimitFilter
-        name: completion-rate-limit
     backendRefs:
     - name: guardrails-service
       port: 8000
 ---
+# Backend for test upstream
 apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: RateLimitFilter
+kind: Backend
 metadata:
-  name: chat-rate-limit
+  name: envoy-ai-gateway-basic-testupstream
   namespace: default
 spec:
-  type: Global
-  global:
-    rules:
-    - clientSelectors:
-      - headers:
-        - name: x-user-id
-          value: "*"
-      descriptors:
-      - entries:
-        - key: user_id
-          value: "{x-user-id}"
-    rateLimits:
-    - key: user_id
-      rateLimit:
-        unit: Minute
-        requestsPerUnit: 100
----
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: RateLimitFilter
-metadata:
-  name: completion-rate-limit
-  namespace: default
-spec:
-  type: Global
-  global:
-    rules:
-    - clientSelectors:
-      - headers:
-        - name: x-api-key
-          value: "*"
-      descriptors:
-      - entries:
-        - key: api_key
-          value: "{x-api-key}"
-    rateLimits:
-    - key: api_key
-      rateLimit:
-        unit: Hour
-        requestsPerUnit: 1000
+  endpoints:
+  - fqdn:
+      hostname: httpbin.org
+      port: 80

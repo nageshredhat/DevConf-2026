@@ -1,0 +1,120 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy-ai-gateway-basic
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: envoy-ai-gateway-basic
+  namespace: default
+spec:
+  gatewayClassName: envoy-ai-gateway-basic
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+---
+# Backend for Qwen LLM model
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: qwen-llm-backend
+  namespace: default
+spec:
+  endpoints:
+  - fqdn:
+      hostname: qwen2.5-kubeflow.svc.cluster.local
+      port: 8080
+---
+# HTTPRoute for LLM endpoints
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: envoy-ai-gateway-basic
+  namespace: default
+spec:
+  parentRefs:
+  - name: envoy-ai-gateway-basic
+  rules:
+  # Chat completions with token rate limiting
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v1/chat/completions
+    filters:
+    - type: ExtensionRef
+      extensionRef:
+        group: gateway.envoyproxy.io
+        kind: RateLimitFilter
+        name: token-rate-limit
+    backendRefs:
+    - group: gateway.envoyproxy.io
+      kind: Backend
+      name: qwen-llm-backend
+  # Completions with token rate limiting
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v1/completions
+    filters:
+    - type: ExtensionRef
+      extensionRef:
+        group: gateway.envoyproxy.io
+        kind: RateLimitFilter
+        name: token-rate-limit
+    backendRefs:
+    - group: gateway.envoyproxy.io
+      kind: Backend
+      name: qwen-llm-backend
+  # Models endpoint (no rate limiting)
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v1/models
+    backendRefs:
+    - group: gateway.envoyproxy.io
+      kind: Backend
+      name: qwen-llm-backend
+---
+# Token-based Rate Limiting Filter
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: RateLimitFilter
+metadata:
+  name: token-rate-limit
+  namespace: default
+spec:
+  type: Global
+  global:
+    rules:
+    # Rate limit by Authorization Bearer token
+    - clientSelectors:
+      - headers:
+        - name: authorization
+          value: "Bearer *"
+      descriptors:
+      - entries:
+        - key: bearer_token
+          value: "{authorization}"
+    # Rate limit by API Key header
+    - clientSelectors:
+      - headers:
+        - name: x-api-key
+          value: "*"
+      descriptors:
+      - entries:
+        - key: api_key
+          value: "{x-api-key}"
+    # Rate limit by client IP as fallback
+    - clientSelectors:
+      - sourceCIDR:
+          value: "0.0.0.0/0"
+      descriptors:
+      - entries:
+        - key: client_ip
+          value: "{remote_address}"

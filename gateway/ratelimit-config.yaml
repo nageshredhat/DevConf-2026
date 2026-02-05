@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ratelimit-config
+  namespace: envoy-gateway-system
+data:
+  config.yaml: |
+    domain: default
+    descriptors:
+      # Token-based rate limits (per Bearer token)
+      - key: bearer_token
+        rate_limit:
+          unit: minute
+          requests_per_unit: 60
+        # Burst allowance for tokens
+        - key: bearer_token
+          rate_limit:
+            unit: hour
+            requests_per_unit: 1000
+      
+      # API Key based rate limits
+      - key: api_key
+        rate_limit:
+          unit: minute
+          requests_per_unit: 100
+        - key: api_key
+          rate_limit:
+            unit: hour
+            requests_per_unit: 2000
+      
+      # IP-based rate limits (fallback)
+      - key: client_ip
+        rate_limit:
+          unit: minute
+          requests_per_unit: 20
+        - key: client_ip
+          rate_limit:
+            unit: hour
+            requests_per_unit: 200
