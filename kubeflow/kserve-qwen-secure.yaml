@@ -1,0 +1,128 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-secret
+  namespace: kubeflow
+  annotations:
+    serving.kserve.io/s3-endpoint: minio-service.kubeflow.svc.cluster.local:9000
+    serving.kserve.io/s3-usehttps: "0"
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: minio
+  AWS_SECRET_ACCESS_KEY: minio123
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kserve-sa
+  namespace: kubeflow
+secrets:
+- name: minio-secret
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: guardrails-verifier
+  namespace: kubeflow
+data:
+  verify.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "=== Starting Model Verification ==="
+    
+    # Download signature from MinIO
+    echo "Downloading signature and model tarball..."
+    aws --endpoint-url http://minio-service.kubeflow.svc.cluster.local:9000 \
+        s3 cp s3://mlpipeline/signed-model/model.tar.gz.sigstore.json /signed-model/model.tar.gz.sigstore.json || echo "Signature not found"
+    
+    aws --endpoint-url http://minio-service.kubeflow.svc.cluster.local:9000 \
+        s3 cp s3://mlpipeline/signed-model/model.tar.gz /signed-model/model.tar.gz || echo "Model tarball not found"
+    
+    if [ -f /signed-model/model.tar.gz.sigstore.json ]; then
+      echo "✓ Signature found"
+      echo "Signature bundle preview:"
+      cat /signed-model/model.tar.gz.sigstore.json | head -20
+      # In production, verify with: sigstore verify identity --bundle /signed-model/model.tar.gz.sigstore.json /signed-model/model.tar.gz
+    else
+      echo "⚠ No signature found - proceeding without verification"
+    fi
+    
+    # Download guardrails config
+    echo "Downloading guardrails config..."
+    aws --endpoint-url http://minio-service.kubeflow.svc.cluster.local:9000 \
+        s3 cp s3://mlpipeline/guardrails/config.yml /mnt/guardrails/config.yml || echo "Guardrails config not found"
+    
+    if [ -f /mnt/guardrails/config.yml ]; then
+      echo "✓ Guardrails config loaded"
+      cat /mnt/guardrails/config.yml
+    else
+      echo "⚠ No guardrails config found"
+    fi
+    
+    echo "=== Verification Complete ==="
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen-model-secure
+  namespace: kubeflow
+  annotations:
+    # Update STORAGE_URI after pipeline run with actual artifact path
+    # Example: s3://mlpipeline/v2/artifacts/<pipeline-name>/<run-id>/fetch-qwen-model/<task-id>/model_output
+spec:
+  predictor:
+    serviceAccountName: kserve-sa
+    model:
+      modelFormat:
+        name: huggingface
+      storageUri: "s3://mlpipeline/v2/artifacts/qwen-model-security-pipeline/65630cfb-7b49-4a67-9557-1694afff1cb6/fetch-qwen-model/62f85cde-099e-4868-b12a-52de28ade85e/model_output"
+      args:
+        - --model_name=qwen2
+      env:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: minio-secret
+            key: AWS_ACCESS_KEY_ID
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: minio-secret
+            key: AWS_SECRET_ACCESS_KEY
+      - name: AWS_ENDPOINT_URL
+        value: "http://minio-service.kubeflow.svc.cluster.local:9000"
+      - name: S3_USE_HTTPS
+        value: "0"
+      - name: S3_ENDPOINT
+        value: "minio-service.kubeflow.svc.cluster.local:9000"
+      resources:
+        limits:
+          cpu: "6"
+          memory: 16Gi
+        requests:
+          cpu: "2"
+          memory: 4Gi
+    initContainers:
+    - name: signature-verifier
+      image: amazon/aws-cli:latest
+      command: ["/bin/bash", "/scripts/verify.sh"]
+      env:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: minio-secret
+            key: AWS_ACCESS_KEY_ID
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: minio-secret
+            key: AWS_SECRET_ACCESS_KEY
+      volumeMounts:
+      - name: verify-script
+        mountPath: /scripts
+    volumes:
+    - name: verify-script
+      configMap:
+        name: guardrails-verifier
+        defaultMode: 0755

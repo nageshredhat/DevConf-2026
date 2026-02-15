@@ -1,0 +1,107 @@
+@startuml security_layers
+
+!theme plain
+skinparam backgroundColor #FEFEFE
+
+title Security Layers - Defense in Depth
+
+package "Layer 1: Supply Chain Security" #FFE0B2 {
+    component "Model Source\nVerification" as source
+    component "Cosign\nSigning" as cosign
+    component "Sigstore\nTransparency" as sigstore
+    
+    source --> cosign
+    cosign --> sigstore
+    
+    note right of cosign
+      **Status: ⚠️ Configured**
+      Signatures not uploaded
+      to MinIO yet
+    end note
+}
+
+package "Layer 2: Vulnerability Assessment" #FFCCBC {
+    component "NVIDIA Garak\nScanner" as garak
+    component "Scan Results\nAnalysis" as scan_results
+    
+    garak --> scan_results
+    
+    note right of garak
+      **Status: ⚠️ Pending**
+      Script available:
+      scripts/garak_scan.py
+    end note
+}
+
+package "Layer 3: Runtime Input Security" #C8E6C9 {
+    component "Jailbreak\nDetection" as jailbreak
+    component "Harmful Content\nCheck" as harmful_input
+    component "Prompt Injection\nPrevention" as injection
+    
+    note right of jailbreak
+      **Status: ✅ Active**
+      Threshold: 0.8
+      Detects bypass attempts
+    end note
+}
+
+package "Layer 4: Runtime Output Security" #A5D6A7 {
+    component "Harmful Content\nFilter" as harmful_output
+    component "Bias\nDetection" as bias
+    component "Hallucination\nCheck" as hallucination
+    
+    note right of harmful_output
+      **Status: ✅ Active**
+      Threshold: 0.7
+      Blocks toxic responses
+    end note
+}
+
+package "Layer 5: Network Security" #BBDEFB {
+    component "Rate Limiting\n(11 req/window)" as ratelimit
+    component "API Gateway\n(Envoy)" as gateway
+    component "Service Mesh\n(K8s Services)" as mesh
+    
+    ratelimit --> gateway
+    gateway --> mesh
+    
+    note right of ratelimit
+      **Status: ✅ Active**
+      Verified: Request 12
+      returns HTTP 429
+    end note
+}
+
+package "Layer 6: Infrastructure Security" #E1BEE7 {
+    component "RBAC\n(Kubernetes)" as rbac
+    component "Network Policies" as netpol
+    component "Pod Security" as podsec
+    
+    rbac --> netpol
+    netpol --> podsec
+}
+
+package "Layer 7: Observability" #FFF9C4 {
+    component "Metrics\n(Prometheus)" as metrics
+    component "Logging\n(K8s Logs)" as logging
+    component "Tracing\n(Distributed)" as tracing
+    
+    metrics --> logging
+    logging --> tracing
+}
+
+sigstore -.-> garak : verified models
+scan_results -.-> jailbreak : security baseline
+injection -.-> harmful_output : request flow
+hallucination -.-> ratelimit : response flow
+mesh -.-> rbac : access control
+podsec -.-> metrics : monitoring
+
+legend right
+  |= Status |= Description |
+  | ✅ Active | Deployed and verified |
+  | ⚠️ Configured | Ready but not fully active |
+  | ⚠️ Pending | Available but not executed |
+endlegend
+
+@enduml

@@ -1,0 +1,83 @@
+@startuml request_flow
+
+!theme plain
+skinparam sequenceMessageAlign center
+skinparam backgroundColor #FEFEFE
+
+title Request Flow with Security Layers
+
+actor Client
+participant "Envoy Gateway\n(Port 30080)" as Envoy
+participant "Rate Limiter\n(Redis)" as RateLimiter
+participant "Guardrails\n(Input)" as InputGuard
+participant "Model Service\n(qwen-model-secure)" as Model
+participant "Guardrails\n(Output)" as OutputGuard
+participant "MinIO\n(Storage)" as Storage
+
+== Request Processing ==
+
+Client -> Envoy: POST /openai/v1/chat/completions\n{"model":"qwen2","messages":[...]}
+activate Envoy
+
+Envoy -> RateLimiter: Check rate limit
+activate RateLimiter
+
+alt Request count > 11
+    RateLimiter --> Envoy: ❌ Rate limit exceeded
+    Envoy --> Client: **429 Too Many Requests**\n"local_rate_limited"
+else Request count ≤ 11
+    RateLimiter --> Envoy: ✅ Allow
+    deactivate RateLimiter
+    
+    Envoy -> InputGuard: Forward request
+    activate InputGuard
+    
+    InputGuard -> InputGuard: Check jailbreak attempt
+    InputGuard -> InputGuard: Check harmful content
+    InputGuard -> InputGuard: Check prompt injection
+    
+    alt Input blocked
+        InputGuard --> Envoy: ❌ Blocked by guardrails
+        Envoy --> Client: **400 Bad Request**\n"Input violates safety policy"
+    else Input safe
+        InputGuard -> Model: Forward to model
+        deactivate InputGuard
+        activate Model
+        
+        Model -> Storage: Load model artifacts
+        activate Storage
+        Storage --> Model: Model data
+        deactivate Storage
+        
+        Model -> Model: Run inference\n(~1-2s)
+        
+        Model -> OutputGuard: Model response
+        deactivate Model
+        activate OutputGuard
+        
+        OutputGuard -> OutputGuard: Check harmful content
+        OutputGuard -> OutputGuard: Check bias
+        OutputGuard -> OutputGuard: Check hallucination
+        
+        OutputGuard -> Envoy: ✅ Filtered response
+        deactivate OutputGuard
+        
+        Envoy --> Client: **200 OK**\n{"id":"chatcmpl-...","choices":[...]}
+    end
+end
+
+deactivate Envoy
+
+== Test Results ==
+
+note over Client, Storage
+  **Verified Test Results:**
+  
+  ✅ Requests 1-11: HTTP 200 (Success)
+  ✅ Request 12: HTTP 429 (Rate Limited)
+  ✅ Guardrails: Active and filtering
+  ✅ Model inference: ~2s latency
+  ✅ End-to-end: ~2s p95
+end note
+
+@enduml

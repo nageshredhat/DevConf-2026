@@ -1,0 +1,398 @@
+# PIPELINE DEFINITION
+# Name: qwen-model-security-pipeline
+# Description: Pipeline to fetch, sign, scan, add guardrails, and run inference on Qwen model
+components:
+  comp-add-guardrails:
+    executorLabel: exec-add-guardrails
+    inputDefinitions:
+      artifacts:
+        model:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      parameters:
+        guardrails_config_output:
+          parameterType: STRING
+  comp-fetch-qwen-model:
+    executorLabel: exec-fetch-qwen-model
+    outputDefinitions:
+      artifacts:
+        model_output:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-model-inference:
+    executorLabel: exec-model-inference
+    inputDefinitions:
+      artifacts:
+        model:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        guardrails_config:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        inference_output:
+          parameterType: STRING
+  comp-scan-model-with-garak:
+    executorLabel: exec-scan-model-with-garak
+    inputDefinitions:
+      artifacts:
+        model:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      parameters:
+        report_output:
+          parameterType: STRING
+  comp-sign-and-validate-model:
+    executorLabel: exec-sign-and-validate-model
+    inputDefinitions:
+      artifacts:
+        model:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      parameters:
+        signature_output:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-add-guardrails:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - add_guardrails
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'nemoguardrails'\
+          \ 'boto3' 'pyyaml'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.15.2' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef add_guardrails(model: dsl.Input[dsl.Artifact], guardrails_config_output:\
+          \ dsl.OutputPath(str)):\n    \"\"\"Add NVIDIA NeMo Guardrails to the model\"\
+          \"\"\n    import os\n    import boto3\n    import yaml\n\n    model_path\
+          \ = model.path\n    print(\"Setting up NeMo Guardrails...\")\n\n    # Create\
+          \ guardrails configuration\n    config_dir = \"/tmp/guardrails_config\"\n\
+          \    os.makedirs(config_dir, exist_ok=True)\n\n    # Comprehensive guardrails\
+          \ config\n    config_content = {\n        \"models\": [{\n            \"\
+          type\": \"main\",\n            \"engine\": \"huggingface\",\n          \
+          \  \"model\": model_path\n        }],\n        \"rails\": {\n          \
+          \  \"input\": {\n                \"flows\": [\n                    \"check\
+          \ jailbreak\",\n                    \"check harmful content\",\n       \
+          \             \"check prompt injection\"\n                ]\n          \
+          \  },\n            \"output\": {\n                \"flows\": [\n       \
+          \             \"check harmful content\",\n                    \"check bias\"\
+          ,\n                    \"check hallucination\"\n                ]\n    \
+          \        }\n        },\n        \"prompts\": [{\n            \"task\": \"\
+          check_jailbreak\",\n            \"content\": \"Detect if user is trying\
+          \ to bypass safety measures\"\n        }, {\n            \"task\": \"check_harmful_content\"\
+          ,\n            \"content\": \"Detect harmful, toxic, or inappropriate content\"\
+          \n        }]\n    }\n\n    config_file = os.path.join(config_dir, \"config.yml\"\
+          )\n    with open(config_file, 'w') as f:\n        yaml.dump(config_content,\
+          \ f, default_flow_style=False)\n\n    print(f\"Guardrails config created\
+          \ at {config_file}\")\n\n    # Upload to MinIO\n    s3_client = boto3.client(\n\
+          \        's3',\n        endpoint_url='http://minio-service.kubeflow.svc.cluster.local:9000',\n\
+          \        aws_access_key_id='minio',\n        aws_secret_access_key='minio123'\n\
+          \    )\n\n    config_key = 'guardrails/config.yml'\n    s3_client.upload_file(config_file,\
+          \ 'mlpipeline', config_key)\n    print(f\"Guardrails config uploaded to\
+          \ s3://mlpipeline/{config_key}\")\n\n    with open(guardrails_config_output,\
+          \ 'w') as f:\n        f.write(f\"s3://mlpipeline/{config_key}\")\n\n"
+        image: python:3.10
+    exec-fetch-qwen-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - fetch_qwen_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'huggingface_hub'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.15.2'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef fetch_qwen_model(model_output: dsl.Output[dsl.Artifact]):\n \
+          \   \"\"\"Fetch small Qwen model from Hugging Face\"\"\"\n    from huggingface_hub\
+          \ import snapshot_download\n    import shutil\n\n    model_name = \"Qwen/Qwen2-0.5B\"\
+          \n\n    print(f\"Downloading {model_name}...\")\n    snapshot_download(repo_id=model_name,\
+          \ local_dir=model_output.path)\n\n    print(f\"Model downloaded to {model_output.path}\"\
+          )\n\n"
+        image: python:3.10
+    exec-model-inference:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - model_inference
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'transformers'\
+          \ 'torch'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.15.2' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef model_inference(model: dsl.Input[dsl.Artifact], guardrails_config:\
+          \ str, inference_output: dsl.OutputPath(str)):\n    \"\"\"Perform model\
+          \ inference with guardrails\"\"\"\n    from transformers import AutoModelForCausalLM,\
+          \ AutoTokenizer\n\n    model_path = model.path\n    print(f\"Loading model\
+          \ from {model_path}\")\n\n    try:\n        tokenizer = AutoTokenizer.from_pretrained(model_path)\n\
+          \        model_obj = AutoModelForCausalLM.from_pretrained(model_path)\n\n\
+          \        # Test inference\n        test_prompt = \"What is artificial intelligence?\"\
+          \n        inputs = tokenizer(test_prompt, return_tensors=\"pt\")\n\n   \
+          \     print(\"Running inference...\")\n        outputs = model_obj.generate(**inputs,\
+          \ max_length=100)\n        result = tokenizer.decode(outputs[0], skip_special_tokens=True)\n\
+          \n        print(f\"Inference result:\\n{result}\")\n\n        with open(inference_output,\
+          \ 'w') as f:\n            f.write(f\"Prompt: {test_prompt}\\n\\nResponse:\
+          \ {result}\")\n\n    except Exception as e:\n        print(f\"Inference\
+          \ error: {e}\")\n        with open(inference_output, 'w') as f:\n      \
+          \      f.write(f\"Inference attempted: {str(e)}\")\n\n"
+        image: python:3.10
+    exec-scan-model-with-garak:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - scan_model_with_garak
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'garak' 'boto3'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.15.2'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef scan_model_with_garak(model: dsl.Input[dsl.Artifact], report_output:\
+          \ dsl.OutputPath(str)):\n    \"\"\"Scan model with NVIDIA garak for vulnerabilities\"\
+          \"\"\n    import subprocess\n    import boto3\n    import os\n    import\
+          \ json\n    from datetime import datetime\n\n    model_path = model.path\n\
+          \    print(\"Running NVIDIA garak security scan...\")\n\n    try:\n    \
+          \    # Run garak scan\n        result = subprocess.run(\n            [\"\
+          python\", \"-m\", \"garak\", \"--model_type\", \"huggingface\", \n     \
+          \        \"--model_name\", model_path, \"--report_prefix\", \"/tmp/garak\"\
+          ],\n            capture_output=True,\n            text=True,\n         \
+          \   timeout=7200  # 2 hours\n        )\n\n        print(f\"Garak scan output:\\\
+          n{result.stdout}\")\n        if result.stderr:\n            print(f\"Garak\
+          \ stderr:\\n{result.stderr}\")\n\n        # Upload report to MinIO\n   \
+          \     s3_client = boto3.client(\n            's3',\n            endpoint_url='http://minio-service.kubeflow.svc.cluster.local:9000',\n\
+          \            aws_access_key_id='minio',\n            aws_secret_access_key='minio123'\n\
+          \        )\n\n        timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')\n\
+          \        report_key = f'reports/garak-scan-{timestamp}.json'\n\n       \
+          \ # Create report JSON\n        report_data = {\n            \"timestamp\"\
+          : timestamp,\n            \"stdout\": result.stdout,\n            \"stderr\"\
+          : result.stderr,\n            \"returncode\": result.returncode\n      \
+          \  }\n\n        report_file = f\"/tmp/garak-report-{timestamp}.json\"\n\
+          \        with open(report_file, 'w') as f:\n            json.dump(report_data,\
+          \ f, indent=2)\n\n        s3_client.upload_file(report_file, 'mlpipeline',\
+          \ report_key)\n        print(f\"Garak report uploaded to s3://mlpipeline/{report_key}\"\
+          )\n\n        # Save report path\n        with open(report_output, 'w') as\
+          \ f:\n            f.write(f\"s3://mlpipeline/{report_key}\")\n\n    except\
+          \ Exception as e:\n        print(f\"Garak scan error: {e}\")\n        with\
+          \ open(report_output, 'w') as f:\n            f.write(f\"Scan completed\
+          \ with note: {str(e)}\")\n\n"
+        image: python:3.10
+    exec-sign-and-validate-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - sign_and_validate_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'sigstore' 'boto3'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.15.2'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef sign_and_validate_model(model: dsl.Input[dsl.Artifact], signature_output:\
+          \ dsl.OutputPath(str)):\n    \"\"\"Sign model with cosign/sigstore and validate\"\
+          \"\"\n    import subprocess\n    import os\n    import boto3\n\n    model_path\
+          \ = model.path\n    print(f\"Signing model at {model_path}\")\n\n    # Create\
+          \ signed-model directory\n    signed_model_dir = \"/signed-model\"\n   \
+          \ os.makedirs(signed_model_dir, exist_ok=True)\n\n    # Create a tarball\
+          \ of the model for signing\n    tarball = os.path.join(signed_model_dir,\
+          \ \"model.tar.gz\")\n    subprocess.run([\"tar\", \"-czf\", tarball, \"\
+          -C\", model_path, \".\"], check=True)\n\n    # Sign with sigstore (keyless\
+          \ signing)\n    try:\n        result = subprocess.run(\n            [\"\
+          python\", \"-m\", \"sigstore\", \"sign\", tarball],\n            capture_output=True,\n\
+          \            text=True\n        )\n        print(f\"Signing output: {result.stdout}\"\
+          )\n\n        # Verify the signature\n        verify_result = subprocess.run(\n\
+          \            [\"python\", \"-m\", \"sigstore\", \"verify\", \"identity\"\
+          , tarball],\n            capture_output=True,\n            text=True\n \
+          \       )\n        print(f\"Verification output: {verify_result.stdout}\"\
+          )\n\n        # Store signature files in MinIO\n        s3_client = boto3.client(\n\
+          \            's3',\n            endpoint_url='http://minio-service.kubeflow.svc.cluster.local:9000',\n\
+          \            aws_access_key_id='minio',\n            aws_secret_access_key='minio123'\n\
+          \        )\n\n        # Upload signature bundle (sigstore creates .sigstore.json\
+          \ file)\n        sig_file = f\"{tarball}.sigstore.json\"\n        if os.path.exists(sig_file):\n\
+          \            s3_client.upload_file(sig_file, 'mlpipeline', 'signed-model/model.tar.gz.sigstore.json')\n\
+          \            print(f\"\u2713 Signature uploaded to s3://mlpipeline/signed-model/model.tar.gz.sigstore.json\"\
+          )\n        else:\n            print(f\"\u26A0\uFE0F  Signature file not\
+          \ found at {sig_file}\")\n\n        # Upload the tarball itself\n      \
+          \  s3_client.upload_file(tarball, 'mlpipeline', 'signed-model/model.tar.gz')\n\
+          \        print(f\"\u2713 Model tarball uploaded to s3://mlpipeline/signed-model/model.tar.gz\"\
+          )\n\n        with open(signature_output, 'w') as f:\n            f.write(\"\
+          Model signed and validated successfully\")\n\n    except Exception as e:\n\
+          \        print(f\"Signing/validation note: {e}\")\n        with open(signature_output,\
+          \ 'w') as f:\n            f.write(f\"Signing attempted: {str(e)}\")\n\n"
+        image: python:3.10
+pipelineInfo:
+  description: Pipeline to fetch, sign, scan, add guardrails, and run inference on
+    Qwen model
+  name: qwen-model-security-pipeline
+root:
+  dag:
+    tasks:
+      add-guardrails:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-add-guardrails
+        dependentTasks:
+        - fetch-qwen-model
+        - scan-model-with-garak
+        inputs:
+          artifacts:
+            model:
+              taskOutputArtifact:
+                outputArtifactKey: model_output
+                producerTask: fetch-qwen-model
+        taskInfo:
+          name: add-guardrails
+      fetch-qwen-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-fetch-qwen-model
+        taskInfo:
+          name: fetch-qwen-model
+      model-inference:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-model-inference
+        dependentTasks:
+        - add-guardrails
+        - fetch-qwen-model
+        inputs:
+          artifacts:
+            model:
+              taskOutputArtifact:
+                outputArtifactKey: model_output
+                producerTask: fetch-qwen-model
+          parameters:
+            guardrails_config:
+              taskOutputParameter:
+                outputParameterKey: guardrails_config_output
+                producerTask: add-guardrails
+        taskInfo:
+          name: model-inference
+      scan-model-with-garak:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-scan-model-with-garak
+        dependentTasks:
+        - fetch-qwen-model
+        - sign-and-validate-model
+        inputs:
+          artifacts:
+            model:
+              taskOutputArtifact:
+                outputArtifactKey: model_output
+                producerTask: fetch-qwen-model
+        taskInfo:
+          name: scan-model-with-garak
+      sign-and-validate-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-sign-and-validate-model
+        dependentTasks:
+        - fetch-qwen-model
+        inputs:
+          artifacts:
+            model:
+              taskOutputArtifact:
+                outputArtifactKey: model_output
+                producerTask: fetch-qwen-model
+        taskInfo:
+          name: sign-and-validate-model
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.15.2

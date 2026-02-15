@@ -5,8 +5,18 @@ End-to-end security pipeline for LLMs with model signing, vulnerability scanning
 
 ## Architecture
 ```
-Model Registry (HuggingFace) → Cosign/Sigstore → NVIDIA Garak → Guardrails → Envoy Gateway → Kubeflow
+Client → Envoy Gateway (Rate Limit) → Guardrails (Input) → Model Service → Guardrails (Output) → Response
+         ↓                              ↓                      ↓
+    Redis Cache                    Jailbreak/Injection    MinIO Storage
+                                   Harmful Content
 ```
+
+**Detailed Architecture**: See [ARCHITECTURE.md](ARCHITECTURE.md)
+
+**Diagrams**:
+- [Deployment Architecture](diagrams/deployment_architecture.puml) - Full minikube deployment
+- [Request Flow](diagrams/request_flow.puml) - Request processing with security layers
+- [Security Layers](diagrams/security_layers.puml) - Defense in depth visualization
 
 ## Components
 1. **Model Fetch**: Pull models from HuggingFace
@@ -22,17 +32,37 @@ Model Registry (HuggingFace) → Cosign/Sigstore → NVIDIA Garak → Guardrails
 - google/gemma-2-2b-it
 - microsoft/DialoGPT-medium (for testing)
 
+## Current Deployment Status
+
+### Minikube Cluster
+- **Status**: Running
+- **Components Deployed**:
+  - ✅ KServe (Model Serving)
+  - ✅ Kubeflow Pipelines
+  - ✅ Cert-Manager
+  - ✅ Envoy AI Gateway
+  - ✅ MinIO (Model Storage)
+  - ✅ MySQL (Metadata Store)
+  
+### Active Models
+- `qwen-model` - Base Qwen model deployment
+- `qwen-model-secure` - Secured Qwen model with guardrails
+
 ## Quick Start
+
+### Minikube Setup (Kubernetes)
+```bash
+# Start minikube (if not running)
+minikube start --cpus=4 --memory=8192 --disk-size=40g
+
+# Deploy the pipeline
+./scripts/setup.sh
+./scripts/pipeline.sh
+```
 
 ### Local Development (Docker)
 ```bash
 ./scripts/quick_start.sh
-```
-
-### Full Pipeline (Kubernetes)
-```bash
-./scripts/setup.sh
-./scripts/pipeline.sh
 ```
 
 ### Manual Steps
@@ -57,6 +87,16 @@ python3 scripts/test_pipeline.py
 ```
 
 ## Services
+
+### Minikube Deployment
+- **Envoy AI Gateway**: `minikube service envoy-ai-gateway -n kubeflow --url`
+- **Kubeflow UI**: `kubectl port-forward -n kubeflow svc/ml-pipeline-ui 8080:80`
+- **KServe Models**: 
+  - qwen-model: `http://qwen-model-predictor.kubeflow.svc.cluster.local`
+  - qwen-model-secure: `http://qwen-model-secure-predictor.kubeflow.svc.cluster.local`
+- **MinIO**: `kubectl port-forward -n kubeflow svc/minio-service 9000:9000`
+
+### Local Docker Deployment
 - **Guardrails API**: http://localhost:8000
 - **Model Service**: http://localhost:8080
 - **Prometheus**: http://localhost:9090
@@ -65,16 +105,28 @@ python3 scripts/test_pipeline.py
 
 ## Directory Structure
 ```
-DevConf/
-├── scripts/           # Pipeline automation scripts
-├── configs/           # Kubernetes configurations
-├── gateway/           # Envoy/Istio configurations
-├── guardrails/        # Guardrails service code
-├── kubeflow/          # Kubeflow pipeline definitions
-├── monitoring/        # Prometheus/Grafana configs
-├── models/            # Downloaded models (created at runtime)
-├── security/          # Signing keys and scan results
-└── docker-compose.yml # Local development setup
+DevConf-2026/
+├── scripts/                      # Pipeline automation scripts
+│   ├── setup.sh                 # Main setup script
+│   ├── pipeline.sh              # Pipeline execution
+│   ├── qwen_security_pipeline.py # Security pipeline implementation
+│   ├── serve_with_guardrails.py # Guardrails service
+│   ├── verify-artifacts.sh      # Artifact verification
+│   └── ...
+├── configs/                     # Kubernetes configurations
+├── gateway/                     # Envoy/Istio configurations
+│   ├── envoy-ai-gateway.yaml   # Envoy gateway deployment
+│   └── ...
+├── kubeflow/                    # Kubeflow pipeline definitions
+│   ├── qwen_security_pipeline.yaml
+│   ├── kserve-qwen-minio.yaml
+│   ├── kserve-qwen-secure.yaml
+│   └── ...
+├── monitoring/                  # Prometheus/Grafana configs
+├── my-poc/                      # POC configurations
+├── models/                      # Downloaded models (runtime)
+├── security/                    # Signing keys and scan results (runtime)
+└── docker-compose.yml           # Local development setup
 ```
 
 ## Security Features
@@ -85,6 +137,15 @@ DevConf/
 - ✅ Service mesh security with mTLS
 - ✅ Monitoring and alerting
 - ✅ Distributed tracing
+
+## Testing & Verification
+
+See [TESTING.md](TESTING.md) for comprehensive testing guide with results:
+- ✅ Minikube cluster verification
+- ✅ KServe inference service tests
+- ✅ Envoy gateway functionality (rate limiting working)
+- ✅ Guardrails configuration validation
+- ⚠️ Model signature verification (pending upload)
 
 ## References
 - [Sigstore Model Signing](https://next.redhat.com/2025/04/10/model-authenticity-and-transparency-with-sigstore/)

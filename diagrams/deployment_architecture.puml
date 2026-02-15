@@ -1,0 +1,102 @@
+@startuml deployment_architecture
+
+!define RECTANGLE class
+
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+
+title LLM Security Pipeline - Deployed Architecture (Minikube)
+
+package "Minikube Cluster" {
+    
+    package "Kubeflow Namespace" #E3F2FD {
+        
+        package "API Gateway Layer" #C8E6C9 {
+            component "Envoy AI Gateway" as envoy #4CAF50
+            component "Redis Cache\n(Rate Limiting)" as redis #81C784
+            envoy --> redis : rate check
+        }
+        
+        package "Model Serving Layer" #BBDEFB {
+            component "KServe Controller" as kserve #2196F3
+            component "qwen-model\n(Base)" as qwen_base #64B5F6
+            component "qwen-model-secure\n(Guardrails)" as qwen_secure #42A5F5
+            
+            kserve --> qwen_base : manages
+            kserve --> qwen_secure : manages
+        }
+        
+        package "Security Layer" #FFE0B2 {
+            component "Signature Verifier\n(Sidecar)" as sigverify #FF9800
+            component "Guardrails Config\n(Input/Output Rails)" as guardrails #FFB74D
+            
+            qwen_secure ..> sigverify : verifies
+            qwen_secure ..> guardrails : filters
+        }
+        
+        package "Storage Layer" #F3E5F5 {
+            database "MinIO\n(Object Storage)" as minio #9C27B0
+            database "MySQL\n(Metadata)" as mysql #BA68C8
+        }
+        
+        package "Pipeline Layer" #FFF9C4 {
+            component "Kubeflow Pipelines" as kfp #FDD835
+            component "Pipeline UI" as kfpui #FFEB3B
+            
+            kfp --> minio : artifacts
+            kfp --> mysql : metadata
+        }
+        
+        envoy --> qwen_base : route
+        envoy --> qwen_secure : route
+        qwen_secure --> minio : load models
+        kfp --> kserve : orchestrate
+    }
+    
+    package "KServe Namespace" #E1F5FE {
+        component "KServe Manager\n(2/2 Running)" as kserve_mgr #0288D1
+        component "KServe Webhook\n(Admission)" as kserve_webhook #03A9F4
+    }
+    
+    package "Cert-Manager Namespace" #F1F8E9 {
+        component "Cert Manager" as certmgr #7CB342
+        component "CA Injector" as ca_inject #9CCC65
+        component "Cert Webhook" as cert_webhook #AED581
+    }
+    
+    kserve_mgr -.-> kserve : manages
+    certmgr -.-> kserve : provides certs
+}
+
+actor "Client" as client #FF5722
+
+client --> envoy : HTTP/HTTPS\nPOST /openai/v1/chat/completions
+
+note right of envoy
+  **NodePort: 30080**
+  Rate Limit: 11 req/window
+  Status: ✅ Running
+end note
+
+note right of qwen_secure
+  **Status: Ready**
+  Age: 39h
+  Containers:
+  - kserve-container
+  - signature-verifier
+end note
+
+note right of guardrails
+  **Active Rails:**
+  Input:
+  - Jailbreak detection
+  - Harmful content
+  - Prompt injection
+  
+  Output:
+  - Harmful content filter
+  - Bias detection
+  - Hallucination check
+end note
+
+@enduml
